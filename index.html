@@ -4,26 +4,26 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>Phone Game</title>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="icon" href="/icon-192.png">
+  <link rel="apple-touch-icon" href="/icon-192.png">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      background: #111;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100dvh;
+      background: #000;
       overflow: hidden;
       touch-action: none;
-    }
-    canvas {
-      display: block;
-      background: #222;
-      border-radius: 4px;
     }
   </style>
 </head>
 <body>
-  <canvas id="game"></canvas>
-  <script src="game.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js');
+    }
+  </script>
+  <script type="module" src="/game.js"></script>
 </body>
 </html>
