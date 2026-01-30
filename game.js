@@ -4,13 +4,12 @@ import * as THREE from 'three';
 // Changelog Notification UI
 // ===========================================
 const changelog = [
-  "🌙 Day-Night Cycle: Days last 1 minute, nights 10 seconds. Everyone sleeps at night with zzz's. Each day = 1 year!",
-  "🌦️ Weather & Birds: Dynamic weather (sunny, cloudy, rainy, windy, snowy) with bird flocks flying in the distance",
-  "🍼 Babies & Aging: Couples make love at trees, babies are born, everyone ages and eventually passes on",
-  "🌅 Peaceful lighting: Golden hour sun with soft warm ambient glow",
-  "🍎 Hunger system: Characters get hungry and eat apples from trees",
-  "💕 Love & relationships: Characters flirt, fall in love, and walk hand-in-hand",
-  "👤 Tap for profiles: See personality, traits, secrets, and relationship status",
+  "🏠 House Building: Fathers chop trees and build houses! Families compete for the biggest home",
+  "🪓 Family Roles: Fathers gather wood, mothers collect apples and raise children at home",
+  "💀 Survival: If anyone in the family starves, they die and the family mourns (slow, sad, heads down)",
+  "🌲 Tree Regrowth: Chopped trees slowly regrow from saplings",
+  "🌙 Day-Night Cycle: Days last 1 minute, nights 10 seconds. Each day = 1 year!",
+  "🌦️ Weather & Birds: Dynamic weather with bird flocks flying in the distance",
 ];
 
 const changelogEl = document.createElement('div');
@@ -329,6 +328,11 @@ const DAY_DURATION = 60; // seconds
 const NIGHT_DURATION = 10; // seconds
 const FULL_CYCLE = DAY_DURATION + NIGHT_DURATION; // 1 cycle = 1 year
 const BABY_TIME = 5; // Seconds of lovemaking before baby
+const TREE_REGROW_TIME = 60; // Seconds for a sapling to become a full tree
+const CHOP_TIME = 3; // Seconds to chop a tree
+const BUILD_TIME = 2; // Seconds to add a room
+const PLANKS_PER_TREE = 4; // Planks from one tree
+const ROOM_COST = 2; // Planks per room
 
 // ===========================================
 // Scene
@@ -931,10 +935,18 @@ const appleGeo = new THREE.SphereGeometry(0.06, 8, 6);
 const appleMat = new THREE.MeshStandardMaterial({ color: 0xdd2222, roughness: 0.6 });
 const appleHighlightMat = new THREE.MeshStandardMaterial({ color: 0xff4444, roughness: 0.5, emissive: 0x441111 });
 
+// Sapling geometry (small growing tree)
+const saplingTrunkGeo = new THREE.CylinderGeometry(0.02, 0.03, 0.15, 6);
+const saplingFoliageGeo = new THREE.SphereGeometry(0.1, 6, 4);
+
+// Stump geometry (after chopping)
+const stumpGeo = new THREE.CylinderGeometry(0.12, 0.15, 0.15, 8);
+
 const APPLE_RESPAWN_TIME = 15; // seconds
 const MAX_APPLES_PER_TREE = 4;
 
 function createApple(tree) {
+  if (tree.state !== 'grown') return null;
   const apple = new THREE.Mesh(appleGeo, appleMat);
   // Random position in foliage
   const angle = Math.random() * Math.PI * 2;
@@ -950,44 +962,146 @@ function createApple(tree) {
   return apple;
 }
 
-function createTree(x, z) {
+function createTree(x, z, startAsGrown = true) {
   const group = new THREE.Group();
 
   const trunk = new THREE.Mesh(trunkGeo, trunkMat);
   trunk.position.y = 0.4;
   trunk.castShadow = true;
+  trunk.name = 'trunk';
   group.add(trunk);
 
   const foliage = new THREE.Mesh(foliageGeo, foliageMat);
   foliage.position.y = 1.0;
   foliage.scale.set(1, 1.2, 1);
   foliage.castShadow = true;
+  foliage.name = 'foliage';
   group.add(foliage);
+
+  // Stump (hidden initially)
+  const stump = new THREE.Mesh(stumpGeo, trunkMat);
+  stump.position.y = 0.075;
+  stump.visible = false;
+  stump.name = 'stump';
+  group.add(stump);
+
+  // Sapling parts (hidden initially)
+  const saplingTrunk = new THREE.Mesh(saplingTrunkGeo, trunkMat);
+  saplingTrunk.position.y = 0.075;
+  saplingTrunk.visible = false;
+  saplingTrunk.name = 'saplingTrunk';
+  group.add(saplingTrunk);
+
+  const saplingFoliage = new THREE.Mesh(saplingFoliageGeo, foliageMat);
+  saplingFoliage.position.y = 0.2;
+  saplingFoliage.visible = false;
+  saplingFoliage.name = 'saplingFoliage';
+  group.add(saplingFoliage);
 
   group.position.set(x, ISLAND_HEIGHT / 2 + 0.15, z);
   scene.add(group);
 
   const treeData = {
     group,
+    trunk,
+    foliage,
+    stump,
+    saplingTrunk,
+    saplingFoliage,
     x,
     z,
     apples: [],
     respawnTimer: 0,
+    state: startAsGrown ? 'grown' : 'sapling', // 'grown', 'chopped', 'sapling'
+    regrowTimer: 0,
+    claimedBy: null, // Person who is going to chop this tree
+    growthProgress: startAsGrown ? 1 : 0, // 0 to 1 for sapling growth
   };
 
-  // Start with some apples
-  const initialApples = 2 + Math.floor(Math.random() * 3);
-  for (let i = 0; i < initialApples; i++) {
-    treeData.apples.push(createApple(treeData));
+  if (startAsGrown) {
+    // Start with some apples
+    const initialApples = 2 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < initialApples; i++) {
+      treeData.apples.push(createApple(treeData));
+    }
+  } else {
+    // Start as sapling
+    trunk.visible = false;
+    foliage.visible = false;
+    saplingTrunk.visible = true;
+    saplingFoliage.visible = true;
   }
 
   return treeData;
 }
 
+// Chop a tree - returns planks
+function chopTree(tree) {
+  if (tree.state !== 'grown') return 0;
+
+  tree.state = 'chopped';
+  tree.regrowTimer = TREE_REGROW_TIME;
+  tree.claimedBy = null;
+
+  // Remove apples
+  for (const apple of tree.apples) {
+    tree.group.remove(apple);
+  }
+  tree.apples = [];
+
+  // Hide trunk and foliage, show stump
+  tree.trunk.visible = false;
+  tree.foliage.visible = false;
+  tree.stump.visible = true;
+
+  return PLANKS_PER_TREE;
+}
+
+// Update tree regrowth
+function updateTreeRegrowth(tree, delta) {
+  if (tree.state === 'chopped') {
+    tree.regrowTimer -= delta;
+    if (tree.regrowTimer <= 0) {
+      // Start regrowing as sapling
+      tree.state = 'sapling';
+      tree.growthProgress = 0;
+      tree.stump.visible = false;
+      tree.saplingTrunk.visible = true;
+      tree.saplingFoliage.visible = true;
+    }
+  } else if (tree.state === 'sapling') {
+    tree.growthProgress += delta / TREE_REGROW_TIME;
+
+    // Scale sapling based on growth
+    const scale = 0.3 + tree.growthProgress * 0.7;
+    tree.saplingTrunk.scale.setScalar(scale);
+    tree.saplingFoliage.scale.setScalar(scale);
+    tree.saplingTrunk.position.y = 0.075 * scale;
+    tree.saplingFoliage.position.y = 0.2 * scale;
+
+    if (tree.growthProgress >= 1) {
+      // Fully grown!
+      tree.state = 'grown';
+      tree.saplingTrunk.visible = false;
+      tree.saplingFoliage.visible = false;
+      tree.trunk.visible = true;
+      tree.foliage.visible = true;
+
+      // Add some apples
+      const newApples = 1 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < newApples; i++) {
+        const apple = createApple(tree);
+        if (apple) tree.apples.push(apple);
+      }
+    }
+  }
+}
+
 // Place some trees around the island
 const trees = [];
 const treePositions = [
-  [-2.5, -1], [-1.5, 2], [2, 1.5], [1, -2.5], [-0.5, -2], [2.5, -0.5]
+  [-2.5, -1], [-1.5, 2], [2, 1.5], [1, -2.5], [-0.5, -2], [2.5, -0.5],
+  [0, 2.5], [-2, -2], [1.5, 0] // Added more trees for competition
 ];
 for (const [x, z] of treePositions) {
   trees.push(createTree(x, z));
@@ -997,7 +1111,25 @@ function findNearestTreeWithApples(person) {
   let nearest = null;
   let nearestDist = Infinity;
   for (const tree of trees) {
-    if (tree.apples.length === 0) continue;
+    if (tree.state !== 'grown' || tree.apples.length === 0) continue;
+    const dx = tree.x - person.x;
+    const dz = tree.z - person.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = tree;
+    }
+  }
+  return nearest;
+}
+
+// Find nearest choppable tree (grown, not claimed by someone else)
+function findNearestChoppableTree(person) {
+  let nearest = null;
+  let nearestDist = Infinity;
+  for (const tree of trees) {
+    if (tree.state !== 'grown') continue;
+    if (tree.claimedBy && tree.claimedBy !== person) continue; // Already claimed
     const dx = tree.x - person.x;
     const dz = tree.z - person.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
@@ -1010,11 +1142,133 @@ function findNearestTreeWithApples(person) {
 }
 
 function eatApple(person, tree) {
-  if (tree.apples.length === 0) return false;
+  if (tree.state !== 'grown' || tree.apples.length === 0) return false;
   const apple = tree.apples.pop();
   tree.group.remove(apple);
   person.hunger = Math.max(0, person.hunger - 40);
   return true;
+}
+
+// ===========================================
+// Houses & Families
+// ===========================================
+const houses = [];
+const families = [];
+
+function createHouse(x, z, family) {
+  const group = new THREE.Group();
+
+  // Base room
+  const baseRoom = createRoom(0, 0);
+  group.add(baseRoom);
+
+  group.position.set(x, ISLAND_HEIGHT / 2 + 0.15, z);
+  scene.add(group);
+
+  const house = {
+    group,
+    x,
+    z,
+    rooms: [baseRoom],
+    roomCount: 1,
+    family,
+  };
+
+  houses.push(house);
+  return house;
+}
+
+function createRoom(offsetX, offsetZ) {
+  const room = new THREE.Group();
+
+  // Floor
+  const floor = new THREE.Mesh(floorGeo, wallMat);
+  floor.position.y = 0.01;
+  room.add(floor);
+
+  // Walls (4 sides)
+  const wallPositions = [
+    { x: 0, z: 0.175, ry: 0 },           // Front
+    { x: 0, z: -0.175, ry: Math.PI },    // Back
+    { x: 0.175, z: 0, ry: Math.PI / 2 }, // Right
+    { x: -0.175, z: 0, ry: -Math.PI / 2 }, // Left
+  ];
+
+  for (let i = 0; i < wallPositions.length; i++) {
+    const wp = wallPositions[i];
+    const wall = new THREE.Mesh(wallGeo, wallMat);
+    wall.position.set(wp.x, 0.15, wp.z);
+    wall.rotation.y = wp.ry;
+    room.add(wall);
+
+    // Add door to front wall
+    if (i === 0) {
+      const door = new THREE.Mesh(doorGeo, doorMat);
+      door.position.set(0, 0.075, 0.026);
+      wall.add(door);
+    }
+    // Add window to side walls
+    if (i === 2 || i === 3) {
+      const window = new THREE.Mesh(windowGeo, windowMat);
+      window.position.set(0, 0.1, 0.026);
+      wall.add(window);
+    }
+  }
+
+  // Roof
+  const roof = new THREE.Mesh(roofGeo, roofMat);
+  roof.position.y = 0.4;
+  roof.rotation.y = Math.PI / 4;
+  room.add(roof);
+
+  room.position.set(offsetX, 0, offsetZ);
+  return room;
+}
+
+function addRoomToHouse(house) {
+  // Find a spot to add a new room (expanding outward)
+  const roomCount = house.roomCount;
+  let offsetX = 0, offsetZ = 0;
+
+  // Spiral outward pattern for room placement
+  if (roomCount === 1) { offsetX = 0.4; offsetZ = 0; }
+  else if (roomCount === 2) { offsetX = -0.4; offsetZ = 0; }
+  else if (roomCount === 3) { offsetX = 0; offsetZ = 0.4; }
+  else if (roomCount === 4) { offsetX = 0; offsetZ = -0.4; }
+  else if (roomCount === 5) { offsetX = 0.4; offsetZ = 0.4; }
+  else if (roomCount === 6) { offsetX = -0.4; offsetZ = 0.4; }
+  else if (roomCount === 7) { offsetX = 0.4; offsetZ = -0.4; }
+  else if (roomCount === 8) { offsetX = -0.4; offsetZ = -0.4; }
+  else {
+    // Beyond 9 rooms, add randomly adjacent
+    const angle = Math.random() * Math.PI * 2;
+    offsetX = Math.cos(angle) * 0.4 * Math.ceil(roomCount / 4);
+    offsetZ = Math.sin(angle) * 0.4 * Math.ceil(roomCount / 4);
+  }
+
+  const newRoom = createRoom(offsetX, offsetZ);
+  house.group.add(newRoom);
+  house.rooms.push(newRoom);
+  house.roomCount++;
+
+  return newRoom;
+}
+
+function createFamily(father, mother) {
+  const family = {
+    father,
+    mother,
+    children: [],
+    house: null,
+    isSad: false,
+    sadTimer: 0,
+  };
+
+  father.family = family;
+  mother.family = family;
+
+  families.push(family);
+  return family;
 }
 
 // ===========================================
@@ -1031,6 +1285,31 @@ const heartGeo = new THREE.SphereGeometry(0.05, 6, 4);
 const skinMat = new THREE.MeshStandardMaterial({ color: 0xffcc88, roughness: 0.8 });
 const eyeMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
 const heartMat = new THREE.MeshStandardMaterial({ color: 0xff69b4, emissive: 0xff1493, emissiveIntensity: 0.5 });
+
+// Axe geometry
+const axeHandleGeo = new THREE.CylinderGeometry(0.01, 0.01, 0.15, 6);
+const axeHeadGeo = new THREE.BoxGeometry(0.06, 0.04, 0.01);
+const axeHandleMat = new THREE.MeshStandardMaterial({ color: 0x5d4037, roughness: 0.9 });
+const axeHeadMat = new THREE.MeshStandardMaterial({ color: 0x888888, roughness: 0.4, metalness: 0.6 });
+
+// Plank geometry (carried wood)
+const plankGeo = new THREE.BoxGeometry(0.08, 0.02, 0.15);
+const plankMat = new THREE.MeshStandardMaterial({ color: 0xdeb887, roughness: 0.9 });
+
+// House parts
+const wallGeo = new THREE.BoxGeometry(0.4, 0.3, 0.05);
+const roofGeo = new THREE.ConeGeometry(0.35, 0.2, 4);
+const floorGeo = new THREE.BoxGeometry(0.4, 0.02, 0.4);
+const wallMat = new THREE.MeshStandardMaterial({ color: 0xdeb887, roughness: 0.9 });
+const roofMat = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.9 });
+const doorGeo = new THREE.BoxGeometry(0.08, 0.15, 0.01);
+const doorMat = new THREE.MeshStandardMaterial({ color: 0x4a3728, roughness: 0.9 });
+const windowGeo = new THREE.BoxGeometry(0.06, 0.06, 0.01);
+const windowMat = new THREE.MeshStandardMaterial({ color: 0x87ceeb, roughness: 0.3, transparent: true, opacity: 0.7 });
+
+// Tear geometry (for sad characters)
+const tearGeo = new THREE.SphereGeometry(0.015, 6, 4);
+const tearMat = new THREE.MeshStandardMaterial({ color: 0x4488ff, transparent: true, opacity: 0.8 });
 
 // Create name label sprite
 function createNameSprite(name) {
@@ -1296,11 +1575,46 @@ function createPerson(index, customName = null, customFemale = null, customAge =
     zzzSprites.push(zzz);
   }
 
+  // Axe (hidden by default, shown when father has baby)
+  const axeGroup = new THREE.Group();
+  const axeHandle = new THREE.Mesh(axeHandleGeo, axeHandleMat);
+  axeHandle.rotation.z = Math.PI / 2;
+  axeGroup.add(axeHandle);
+  const axeHead = new THREE.Mesh(axeHeadGeo, axeHeadMat);
+  axeHead.position.x = 0.06;
+  axeGroup.add(axeHead);
+  axeGroup.position.set(0.12, 0.05, 0);
+  axeGroup.visible = false;
+  rightArmPivot.add(axeGroup);
+
+  // Planks being carried (hidden by default)
+  const planksGroup = new THREE.Group();
+  for (let i = 0; i < 4; i++) {
+    const plank = new THREE.Mesh(plankGeo, plankMat);
+    plank.position.y = i * 0.025;
+    plank.rotation.y = (i % 2) * 0.1;
+    planksGroup.add(plank);
+  }
+  planksGroup.position.set(0, 0.15, 0.1);
+  planksGroup.visible = false;
+  group.add(planksGroup);
+
+  // Tears (hidden by default, shown when sad)
+  const leftTear = new THREE.Mesh(tearGeo, tearMat);
+  leftTear.position.set(-0.04, 0.2, 0.12);
+  leftTear.visible = false;
+  group.add(leftTear);
+  const rightTear = new THREE.Mesh(tearGeo, tearMat);
+  rightTear.position.set(0.04, 0.2, 0.12);
+  rightTear.visible = false;
+  group.add(rightTear);
+
   scene.add(group);
 
   // Random starting position on island
   const angle = (index / PERSON_COUNT) * Math.PI * 2 + Math.random() * 0.5;
   const dist = Math.random() * (ISLAND_RADIUS - 1);
+  const personWalkSpeed = 0.5 + Math.random() * 0.4;
 
   return {
     group,
@@ -1312,13 +1626,18 @@ function createPerson(index, customName = null, customFemale = null, customAge =
     rightArmPivot,
     leftLegPivot,
     rightLegPivot,
+    axeGroup,
+    planksGroup,
+    leftTear,
+    rightTear,
     name,
     isFemale,
     x: Math.cos(angle) * dist,
     z: Math.sin(angle) * dist,
     targetX: 0,
     targetZ: 0,
-    walkSpeed: 0.5 + Math.random() * 0.4,
+    walkSpeed: personWalkSpeed,
+    baseWalkSpeed: personWalkSpeed, // Store original speed for sadness recovery
     phase: Math.random() * Math.PI * 2,
     waitTime: 0,
     isWalking: true,
@@ -1338,6 +1657,19 @@ function createPerson(index, customName = null, customFemale = null, customAge =
     hadBaby: false, // Prevent immediate repeat babies
     babyCooldown: 0,
     isSleeping: false,
+    // New family/house properties
+    family: null,
+    hasAxe: false,
+    planksCarried: 0,
+    isChopping: false,
+    chopTimer: 0,
+    chopTarget: null,
+    isBuilding: false,
+    buildTimer: 0,
+    isSad: false,
+    sadTimer: 0,
+    isAtHome: false, // For mothers staying home
+    isCollectingForFamily: false, // For mothers collecting apples
   };
 }
 
@@ -1390,11 +1722,38 @@ function spawnBaby(parent1, parent2) {
   pickNewTarget(baby);
   people.push(baby);
 
+  // Determine father and mother
+  const father = parent1.isFemale ? parent2 : parent1;
+  const mother = parent1.isFemale ? parent1 : parent2;
+
+  // Create or update family
+  let family = father.family || mother.family;
+  if (!family) {
+    family = createFamily(father, mother);
+
+    // Find a spot for the house (near where baby was born)
+    const houseAngle = Math.random() * Math.PI * 2;
+    const houseDist = 1.5 + Math.random();
+    const houseX = Math.cos(houseAngle) * houseDist;
+    const houseZ = Math.sin(houseAngle) * houseDist;
+    family.house = createHouse(houseX, houseZ, family);
+  }
+
+  // Add baby to family
+  family.children.push(baby);
+  baby.family = family;
+
+  // Give father an axe if he doesn't have one
+  if (!father.hasAxe) {
+    father.hasAxe = true;
+    father.axeGroup.visible = true;
+  }
+
   return baby;
 }
 
-// Remove dead people (called when age > MAX_AGE)
-function removePerson(person) {
+// Remove dead people (called when age > MAX_AGE or starvation)
+function removePerson(person, wasStarvation = false) {
   // Clean up relationships
   if (person.lovePartner) {
     person.lovePartner.inLove = false;
@@ -1404,6 +1763,25 @@ function removePerson(person) {
   if (person.flirtPartner) {
     person.flirtPartner.isFlirting = false;
     person.flirtPartner.flirtPartner = null;
+  }
+
+  // Handle family grief if starvation
+  if (wasStarvation && person.family) {
+    makeFamilySad(person.family, person);
+  }
+
+  // Remove from family
+  if (person.family) {
+    const family = person.family;
+    if (family.father === person) family.father = null;
+    if (family.mother === person) family.mother = null;
+    const childIdx = family.children.indexOf(person);
+    if (childIdx !== -1) family.children.splice(childIdx, 1);
+  }
+
+  // Release any claimed tree
+  if (person.chopTarget) {
+    person.chopTarget.claimedBy = null;
   }
 
   // Remove from scene
@@ -1417,6 +1795,21 @@ function removePerson(person) {
   if (focusedPerson === person) {
     focusedPerson = null;
     hideProfile();
+  }
+}
+
+// Make family sad when someone dies from starvation
+function makeFamilySad(family, deadPerson) {
+  family.isSad = true;
+  family.sadTimer = 30; // Sad for 30 seconds
+
+  const members = [family.father, family.mother, ...family.children].filter(m => m && m !== deadPerson);
+  for (const member of members) {
+    member.isSad = true;
+    member.sadTimer = 30;
+    member.walkSpeed = member.baseWalkSpeed * 0.25; // 75% slower
+    member.leftTear.visible = true;
+    member.rightTear.visible = true;
   }
 }
 
@@ -1644,25 +2037,38 @@ function animate() {
     }
   }
 
-  // --- Trees sway & apples respawn ---
+  // --- Trees sway, regrow & apples respawn ---
   for (let i = 0; i < trees.length; i++) {
     const tree = trees[i];
-    const windSway = 0.03 + windStrength * 0.08;
-    tree.group.rotation.z = Math.sin(elapsed * (1.5 + windStrength) + i) * windSway;
-    tree.group.rotation.x = Math.sin(elapsed * (1.2 + windStrength * 0.5) + i * 0.5) * windSway * 0.7;
 
-    // Respawn apples
-    if (tree.apples.length < MAX_APPLES_PER_TREE) {
-      tree.respawnTimer += delta;
-      if (tree.respawnTimer >= APPLE_RESPAWN_TIME) {
-        tree.respawnTimer = 0;
-        tree.apples.push(createApple(tree));
+    // Update tree regrowth
+    updateTreeRegrowth(tree, delta);
+
+    // Only animate grown trees and saplings
+    if (tree.state === 'grown') {
+      const windSway = 0.03 + windStrength * 0.08;
+      tree.group.rotation.z = Math.sin(elapsed * (1.5 + windStrength) + i) * windSway;
+      tree.group.rotation.x = Math.sin(elapsed * (1.2 + windStrength * 0.5) + i * 0.5) * windSway * 0.7;
+
+      // Respawn apples
+      if (tree.apples.length < MAX_APPLES_PER_TREE) {
+        tree.respawnTimer += delta;
+        if (tree.respawnTimer >= APPLE_RESPAWN_TIME) {
+          tree.respawnTimer = 0;
+          const apple = createApple(tree);
+          if (apple) tree.apples.push(apple);
+        }
       }
-    }
 
-    // Animate apples (gentle sway)
-    for (const apple of tree.apples) {
-      apple.position.y += Math.sin(elapsed * 2 + apple.position.x * 10) * 0.001;
+      // Animate apples (gentle sway)
+      for (const apple of tree.apples) {
+        apple.position.y += Math.sin(elapsed * 2 + apple.position.x * 10) * 0.001;
+      }
+    } else if (tree.state === 'sapling') {
+      // Gentle sway for saplings
+      const saplingSway = 0.05 + windStrength * 0.1;
+      tree.saplingTrunk.rotation.z = Math.sin(elapsed * 2 + i) * saplingSway;
+      tree.saplingFoliage.rotation.z = Math.sin(elapsed * 2.2 + i) * saplingSway;
     }
   }
 
@@ -1679,17 +2085,11 @@ function animate() {
   // Check if a new day started (for aging)
   const dayJustStarted = prevTimeOfDay >= DAY_DURATION && timeOfDay < DAY_DURATION;
 
-  // --- Island gentle bob (more in wind) ---
-  const bobStrength = 0.1 + windStrength * 0.15;
-  islandGroup.position.y = Math.sin(elapsed * 0.5) * bobStrength;
-  islandGroup.rotation.z = Math.sin(elapsed * 0.3) * (0.01 + windStrength * 0.02);
-  islandGroup.rotation.x = Math.sin(elapsed * 0.4) * (0.01 + windStrength * 0.02);
-
   // --- Check for flirting ---
   checkForFlirting();
 
   // --- People ---
-  const surfaceY = ISLAND_HEIGHT / 2 + 0.15 + islandGroup.position.y;
+  const surfaceY = ISLAND_HEIGHT / 2 + 0.15;
 
   // Use a copy of array in case we remove people
   const peopleCopy = [...people];
@@ -1787,14 +2187,243 @@ function animate() {
     p.hunger += delta * hungerRate;
     if (p.hunger > 100) p.hunger = 100;
 
+    // Starvation death
+    if (p.hunger >= 100) {
+      removePerson(p, true); // true = starvation
+      continue;
+    }
+
+    // Update sadness
+    if (p.isSad) {
+      p.sadTimer -= delta;
+      if (p.sadTimer <= 0) {
+        // Sadness ends
+        p.isSad = false;
+        p.walkSpeed = p.baseWalkSpeed;
+        p.leftTear.visible = false;
+        p.rightTear.visible = false;
+        if (p.family) p.family.isSad = false;
+      } else {
+        // Animate tears dripping
+        const tearDrip = Math.sin(elapsed * 4 + p.phase) * 0.02;
+        p.leftTear.position.y = 0.2 + tearDrip;
+        p.rightTear.position.y = 0.2 + tearDrip - 0.01;
+
+        // Head facing down when sad
+        p.head.rotation.x = 0.4;
+      }
+    } else {
+      p.head.rotation.x = 0; // Normal head position
+    }
+
     // Only adults can do adult things
     const isAdult = p.age >= 18;
 
+    // ===========================================
+    // Father behavior: chop trees, build house
+    // ===========================================
+    const fatherCriticallyHungry = p.hasAxe && p.hunger > 80;
+
+    // If critically hungry, stop working and go eat
+    if (fatherCriticallyHungry && (p.isChopping || p.isBuilding)) {
+      if (p.chopTarget) p.chopTarget.claimedBy = null;
+      p.isChopping = false;
+      p.isBuilding = false;
+      p.chopTarget = null;
+      p.rightArmPivot.rotation.z = 0;
+    }
+
+    if (p.hasAxe && p.family && p.family.house && !p.isSleeping && !p.isMakingLove && !p.isFlirting && !fatherCriticallyHungry) {
+      const house = p.family.house;
+
+      // Currently chopping
+      if (p.isChopping && p.chopTarget) {
+        p.chopTimer -= delta;
+
+        // Face the tree
+        const dx = p.chopTarget.x - p.x;
+        const dz = p.chopTarget.z - p.z;
+        p.group.rotation.y = Math.atan2(dx, dz);
+
+        // Chopping animation - swing axe
+        p.rightArmPivot.rotation.x = Math.sin(elapsed * 8) * 1.2;
+        p.rightArmPivot.rotation.z = -0.3;
+
+        if (p.chopTimer <= 0) {
+          // Done chopping! Get planks
+          const planks = chopTree(p.chopTarget);
+          p.planksCarried = planks;
+          p.planksGroup.visible = true;
+
+          // Update planks visual based on count
+          const plankMeshes = p.planksGroup.children;
+          for (let pi = 0; pi < plankMeshes.length; pi++) {
+            plankMeshes[pi].visible = pi < p.planksCarried;
+          }
+
+          p.isChopping = false;
+          p.chopTarget = null;
+          p.rightArmPivot.rotation.z = 0;
+
+          // Now go to house to build
+          p.isBuilding = false;
+          p.targetX = house.x;
+          p.targetZ = house.z;
+          p.isWalking = true;
+        }
+      }
+      // Currently building
+      else if (p.isBuilding && p.planksCarried >= ROOM_COST) {
+        p.buildTimer -= delta;
+
+        // Building animation
+        p.rightArmPivot.rotation.x = Math.sin(elapsed * 6) * 0.8;
+        p.leftArmPivot.rotation.x = Math.sin(elapsed * 6 + 1) * 0.8;
+
+        if (p.buildTimer <= 0) {
+          // Add a room!
+          addRoomToHouse(house);
+          p.planksCarried -= ROOM_COST;
+
+          // Update planks visual
+          const plankMeshes = p.planksGroup.children;
+          for (let pi = 0; pi < plankMeshes.length; pi++) {
+            plankMeshes[pi].visible = pi < p.planksCarried;
+          }
+
+          if (p.planksCarried < ROOM_COST) {
+            p.planksGroup.visible = false;
+          }
+
+          p.isBuilding = false;
+
+          // If still have planks, keep building
+          if (p.planksCarried >= ROOM_COST) {
+            p.isBuilding = true;
+            p.buildTimer = BUILD_TIME;
+          } else {
+            // Go find another tree
+            p.waitTime = 1;
+            pickNewTarget(p);
+          }
+        }
+      }
+      // Carrying planks, go to house
+      else if (p.planksCarried >= ROOM_COST) {
+        const dx = house.x - p.x;
+        const dz = house.z - p.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < 0.5) {
+          // At house, start building
+          p.isBuilding = true;
+          p.buildTimer = BUILD_TIME;
+          p.isWalking = false;
+        } else {
+          // Walk to house
+          p.targetX = house.x;
+          p.targetZ = house.z;
+          p.isWalking = true;
+        }
+      }
+      // No planks, find a tree to chop
+      else if (!p.isChopping && !p.seekingFood) {
+        const tree = findNearestChoppableTree(p);
+        if (tree) {
+          tree.claimedBy = p; // Claim the tree!
+          p.chopTarget = tree;
+          p.targetX = tree.x;
+          p.targetZ = tree.z;
+          p.isWalking = true;
+
+          // Check if at tree
+          const dx = tree.x - p.x;
+          const dz = tree.z - p.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+          if (dist < 0.6) {
+            p.isChopping = true;
+            p.chopTimer = CHOP_TIME;
+            p.isWalking = false;
+          }
+        }
+      }
+      // Walking to claimed tree
+      else if (p.chopTarget && !p.isChopping) {
+        const dx = p.chopTarget.x - p.x;
+        const dz = p.chopTarget.z - p.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+        if (dist < 0.6) {
+          p.isChopping = true;
+          p.chopTimer = CHOP_TIME;
+          p.isWalking = false;
+        }
+      }
+    }
+
+    // ===========================================
+    // Mother behavior: stay home, collect apples for family
+    // ===========================================
+    if (p.isFemale && p.family && p.family.house && !p.isSleeping && !p.isMakingLove && !p.isFlirting) {
+      const house = p.family.house;
+      const familyMembers = [p.family.father, p.family.mother, ...p.family.children].filter(m => m);
+
+      // Check if any family member is hungry
+      const hungryMember = familyMembers.find(m => m.hunger > 50);
+
+      if (hungryMember && !p.isCollectingForFamily && !p.isEating) {
+        // Go collect apples
+        const tree = findNearestTreeWithApples(p);
+        if (tree) {
+          p.isCollectingForFamily = true;
+          p.targetTree = tree;
+          p.targetX = tree.x;
+          p.targetZ = tree.z;
+          p.isWalking = true;
+        }
+      } else if (p.isCollectingForFamily && p.targetTree) {
+        const dx = p.targetTree.x - p.x;
+        const dz = p.targetTree.z - p.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < 0.4) {
+          // At tree, collect apples for family
+          for (const member of familyMembers) {
+            if (member.hunger > 30 && p.targetTree.apples.length > 0) {
+              eatApple(member, p.targetTree);
+            }
+          }
+          p.isCollectingForFamily = false;
+          p.targetTree = null;
+
+          // Go back home
+          p.targetX = house.x + (Math.random() - 0.5) * 0.5;
+          p.targetZ = house.z + (Math.random() - 0.5) * 0.5;
+          p.isWalking = true;
+          p.isAtHome = false;
+        }
+      } else if (!p.isAtHome && !p.seekingFood && !p.isCollectingForFamily) {
+        // Stay near house
+        const dx = house.x - p.x;
+        const dz = house.z - p.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist > 1.5) {
+          // Too far from home, go back
+          p.targetX = house.x + (Math.random() - 0.5) * 0.5;
+          p.targetZ = house.z + (Math.random() - 0.5) * 0.5;
+          p.isWalking = true;
+        } else {
+          p.isAtHome = true;
+        }
+      }
+    }
+
     // Check if should seek food (hungry and not doing something important)
     const isHungry = p.hunger > 60;
-    const isBusy = p.isFlirting || p.isEating || p.isMakingLove;
+    const isBusy = p.isFlirting || p.isEating || p.isMakingLove || p.isChopping || p.isBuilding || p.isCollectingForFamily;
 
-    if (isHungry && !isBusy && !p.seekingFood && !p.goingToTree) {
+    if (isHungry && !isBusy && !p.seekingFood && !p.goingToTree && (!p.hasAxe || fatherCriticallyHungry)) {
+      // Non-fathers seek food, or fathers when critically hungry (>80)
       const tree = findNearestTreeWithApples(p);
       if (tree) {
         p.seekingFood = true;
@@ -1915,8 +2544,8 @@ function animate() {
           pickNewTarget(p);
         }
       }
-    } else if (p.inLove && p.lovePartner && !p.isMakingLove) {
-      // Walking hand in hand with partner
+    } else if (p.inLove && p.lovePartner && !p.isMakingLove && !(p.family && p.family.house)) {
+      // Walking hand in hand with partner (only before they have a family home)
       const partner = p.lovePartner;
 
       // Only the "leader" (non-female) controls movement
